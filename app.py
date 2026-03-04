@@ -9,7 +9,7 @@ import pytesseract
 # ============================
 # CONFIG GENERAL
 # ============================
-APP_TITLE = "📄 Unir PDFs + 🖼️ Convertir JPG a PDF + ✍️ Firma opcional"
+APP_TITLE = "Aplicativo en construcciòn para Karina 💓 "
 TARGET_DEFAULT = "Lennin Karina Triana Fandiño"
 ACCENT_COLOR = "#C384E8"
 
