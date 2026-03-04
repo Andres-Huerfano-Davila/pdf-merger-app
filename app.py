@@ -3,7 +3,7 @@ import re
 import zipfile
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw, ImageOps, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageOps, ImageEnhance
 import pytesseract
 
 # ============================
@@ -26,15 +26,25 @@ st.markdown(
     f"""
     <style>
     .stApp {{
-        background-color: #F8F2FF;
+        background: linear-gradient(180deg, #F9F4FF 0%, #F4ECFF 100%);
     }}
 
     h1, h2, h3 {{
-        color: #5B2A86;
+        color: #4B2A67;
     }}
 
     section[data-testid="stSidebar"] {{
-        background-color: #F1E4FF;
+        background: linear-gradient(180deg, #F0E2FF 0%, #EAD9FB 100%);
+        border-right: 1px solid #DFC9F5;
+    }}
+
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] div {{
+        color: #3F2B56;
     }}
 
     div[data-testid="stButton"] > button {{
@@ -46,6 +56,11 @@ st.markdown(
         font-weight: 600;
     }}
 
+    div[data-testid="stButton"] > button:hover {{
+        background-color: #AE6FE0;
+        color: white;
+    }}
+
     div[data-testid="stDownloadButton"] > button {{
         background-color: {ACCENT_COLOR};
         color: white;
@@ -55,13 +70,48 @@ st.markdown(
         font-weight: 600;
     }}
 
+    div[data-testid="stDownloadButton"] > button:hover {{
+        background-color: #AE6FE0;
+        color: white;
+    }}
+
     .custom-box {{
         background: white;
-        padding: 1rem;
-        border-radius: 14px;
+        padding: 1.2rem;
+        border-radius: 16px;
         border: 1px solid #E7D8F8;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        box-shadow: 0 4px 14px rgba(91, 42, 134, 0.06);
         margin-bottom: 1rem;
+    }}
+
+    .hero-box {{
+        background: linear-gradient(90deg, #C384E8 0%, #E4C8FA 100%);
+        padding: 20px;
+        border-radius: 18px;
+        color: white;
+        text-align: center;
+        font-size: 28px;
+        font-weight: 700;
+        margin-bottom: 18px;
+        box-shadow: 0 6px 20px rgba(195, 132, 232, 0.25);
+    }}
+
+    .subhero-box {{
+        background: white;
+        padding: 18px;
+        border-radius: 16px;
+        border: 1px solid #E7D8F8;
+        margin-bottom: 18px;
+    }}
+
+    .small-note {{
+        color: #6F5B84;
+        font-size: 14px;
+    }}
+
+    .block-container {{
+        padding-top: 1.3rem;
+        padding-bottom: 2rem;
     }}
     </style>
     """,
@@ -311,7 +361,6 @@ def preprocess_image(
     if img.mode not in ("RGB", "RGBA", "L"):
         img = img.convert("RGB")
 
-    # Mejora automática
     if auto_enhance:
         if img.mode == "RGBA":
             temp = img.convert("RGB")
@@ -323,7 +372,6 @@ def preprocess_image(
         temp = ImageEnhance.Sharpness(temp).enhance(1.3)
         img = temp
 
-    # Manual
     if img.mode == "RGBA":
         work = img.convert("RGB")
     else:
@@ -406,24 +454,48 @@ menu = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown(f"**Color base:** `{ACCENT_COLOR}`")
+st.sidebar.caption("Herramientas pensadas para una experiencia simple, rápida y bonita ✨")
 
 # ============================
 # PANTALLA INICIO
 # ============================
 if menu == "Inicio":
+    st.markdown(
+        """
+        <div class="hero-box">
+            Aplicativo en construcción para Karina 💓
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     st.title(APP_TITLE)
-    st.markdown('<div class="custom-box">', unsafe_allow_html=True)
-    st.subheader("Herramientas disponibles")
-    st.write("""
-    - **Unir PDFs**
-    - **Firma opcional sobre nombre detectado**
-    - **OCR para PDFs escaneados**
-    - **Convertir JPG/JPEG/PNG a PDF**
-    - **Mejorar imágenes antes de convertir**
-    - **Descargar PDFs individuales o unificados**
-    """)
-    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div class="subhero-box">
+            <b>Bienvenida.</b><br><br>
+            Este aplicativo reúne herramientas para trabajar con documentos de forma más práctica:
+            unir PDFs, convertir imágenes a PDF y firmar documentos cuando aplique.
+            <br><br>
+            La idea es seguirlo mejorando poco a poco hasta convertirlo en una suite mucho más completa.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown('<div class="custom-box">', unsafe_allow_html=True)
+        st.subheader("📄 Unir PDFs y firmar")
+        st.write("Une varios PDFs en un solo archivo y, si se detecta el nombre configurado, habilita firma opcional con previsualización.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="custom-box">', unsafe_allow_html=True)
+        st.subheader("🖼️ Imágenes a PDF")
+        st.write("Convierte JPG, JPEG o PNG a PDF, mejora la imagen antes de convertir y descarga archivos individuales o unificados.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================
 # UNIR PDFs Y FIRMAR
@@ -643,7 +715,7 @@ elif menu == "Imágenes a PDF":
 
     st.markdown('<div class="custom-box">', unsafe_allow_html=True)
 
-    col_a, col_b = st.columns([1, 1])
+    col_a, _ = st.columns([1, 1])
     with col_a:
         if st.button("🔄 Reiniciar sección imágenes"):
             reset_images_section()
