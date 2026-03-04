@@ -348,7 +348,7 @@ def build_zip_of_pdfs(pdf_bytes_list, pdf_names):
 st.title(APP_TITLE)
 st.write("Aquí puedes trabajar con PDFs e imágenes en un solo lugar.")
 
-tab1, tab2 = st.tabs(["Aplicativo en construcciòn para Karina 💓"])
+tab1 = st.tabs(["Aplicativo en construcciòn para Karina 💓"])
 
 # =========================================================
 # TAB 1: PDF MERGE + FIRMA
