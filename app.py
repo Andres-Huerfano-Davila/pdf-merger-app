@@ -594,7 +594,7 @@ def compress_pdf_rasterize(pdf_bytes: bytes, dpi: int = 120, jpeg_quality: int =
 st.sidebar.title("📚 Menú")
 menu = st.sidebar.radio(
     "Selecciona una herramienta",
-    ["Inicio", "Unir PDFs (tipo iLovePDF)", "Imágenes a PDF", "Comprimir PDF"],
+    ["Inicio", "Unir PDFs", "Imágenes a PDF", "Comprimir PDF"],
 )
 st.sidebar.markdown("---")
 st.sidebar.caption("Carga → previsualiza → ordena → une → firma (opcional) ✅")
@@ -613,7 +613,7 @@ if menu == "Inicio":
 # =========================================================
 # MODULE: MERGE LIKE ILOVEPDF
 # =========================================================
-elif menu == "Unir PDFs (tipo iLovePDF)":
+elif menu == "Unir PDFs":
     st.markdown(
         "<div class='card'>"
         "<h2 style='margin:0'>📄 Unir PDFs (carga → preview → ordena → une → firma)</h2>"
