@@ -606,7 +606,7 @@ if menu == "Inicio":
     st.markdown('<div class="hero">Aplicativo en construcción para Karina 💓</div>', unsafe_allow_html=True)
     st.markdown(
         f"<div class='card'><h2 style='margin:0'>{APP_TITLE}</h2>"
-        f"<p class='muted'>Enfoque: rendimiento + experiencia tipo iLovePDF (pero más controlada).</p></div>",
+        f"<p class='muted'>Aplicativo en trabajo, con opciones de mejora",
         unsafe_allow_html=True
     )
 
