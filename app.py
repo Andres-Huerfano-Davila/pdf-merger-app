@@ -12,14 +12,13 @@ import pytesseract
 APP_TITLE = "📄 Suite PDF: Unir, Convertir Imágenes, Firmar y Comprimir"
 TARGET_DEFAULT = "Lennin Karina Triana Fandiño"
 
-# Color aguamarina
 ACCENT = "#20DE6E"
 ACCENT_HOVER = "#16B85B"
 
 st.set_page_config(page_title="Suite PDF", page_icon="📄", layout="wide")
 
 # ==========================================
-# STYLES (pro)
+# STYLES
 # ==========================================
 st.markdown(
     f"""
@@ -27,15 +26,11 @@ st.markdown(
       .stApp {{
         background: radial-gradient(1200px 700px at 10% 10%, #F2FFFA 0%, #EFFFF7 35%, #F7FFFB 70%, #FFFFFF 100%);
       }}
-
       section[data-testid="stSidebar"] {{
         background: linear-gradient(180deg, #EFFFF7 0%, #E8FFF1 100%);
         border-right: 1px solid #C9F7DE;
       }}
-
-      h1, h2, h3 {{
-        color: #0F5132;
-      }}
+      h1, h2, h3 {{ color: #0F5132; }}
 
       .hero {{
         background: linear-gradient(90deg, {ACCENT} 0%, #8CF0C0 100%);
@@ -59,10 +54,7 @@ st.markdown(
         margin-bottom: 12px;
       }}
 
-      .muted {{
-        color: #3D6B55;
-        font-size: 14px;
-      }}
+      .muted {{ color: #3D6B55; font-size: 14px; }}
 
       div[data-testid="stButton"] > button,
       div[data-testid="stDownloadButton"] > button {{
@@ -73,15 +65,10 @@ st.markdown(
         padding: 0.60rem 1rem;
         font-weight: 900;
       }}
-
       div[data-testid="stButton"] > button:hover,
       div[data-testid="stDownloadButton"] > button:hover {{
         background-color: {ACCENT_HOVER};
         color: white;
-      }}
-
-      .stRadio > label, .stCheckbox > label {{
-        font-weight: 600 !important;
       }}
 
       .block-container {{
@@ -98,33 +85,32 @@ st.markdown(
 # ==========================================
 def init_state():
     defaults = {
-        # Merge & sign
-        "merge_files": [],            # [{"name": str, "bytes": bytes, "size": int}]
-        "merge_signature": None,      # signature of set of files to detect changes
+        "merge_files": [],
+        "merge_signature": None,
         "merged_pdf_bytes": None,
 
-        # detection
         "detected": False,
         "det_page": None,
-        "det_rect": None,            # (x0,y0,x1,y1)
+        "det_rect": None,
         "det_method": None,
 
-        # inputs
         "last_output_name": "PDF_unido.pdf",
         "last_target": TARGET_DEFAULT,
 
-        # signature offsets
         "sig_dx": 0.0,
         "sig_dy": 0.0,
 
-        # Images module
         "converted_images_pdf_bytes": [],
         "converted_images_names": [],
         "merged_images_pdf_bytes": None,
 
-        # Compress module
         "compressed_pdf_bytes": None,
         "compressed_name": "archivo_comprimido.pdf",
+
+        # para navegadores de preview
+        "preview_page_merge": 1,
+        "preview_page_images": 1,
+        "preview_page_signed": 1,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -140,11 +126,14 @@ def reset_merge():
     st.session_state.det_method = None
     st.session_state.sig_dx = 0.0
     st.session_state.sig_dy = 0.0
+    st.session_state.preview_page_merge = 1
+    st.session_state.preview_page_signed = 1
 
 def reset_images():
     st.session_state.converted_images_pdf_bytes = []
     st.session_state.converted_images_names = []
     st.session_state.merged_images_pdf_bytes = None
+    st.session_state.preview_page_images = 1
 
 def reset_compress():
     st.session_state.compressed_pdf_bytes = None
@@ -172,6 +161,78 @@ def merge_pdfs(files_bytes_in_order) -> bytes:
     out.seek(0)
     return out.getvalue()
 
+# ---------- PREVIEW ENGINE ----------
+def pdf_page_count(pdf_bytes: bytes) -> int:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    n = doc.page_count
+    doc.close()
+    return n
+
+@st.cache_data(show_spinner=False)
+def render_pdf_page(pdf_bytes: bytes, page_index_0: int, dpi: int = 120) -> bytes:
+    """
+    Renderiza UNA página a PNG (bytes).
+    Cacheado para que sea rápido cuando el usuario navega.
+    """
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[page_index_0]
+    zoom = dpi / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+    doc.close()
+    return pix.tobytes("png")
+
+def preview_pdf_viewer(pdf_bytes: bytes, key_prefix: str, title: str, default_page: int = 1):
+    """
+    Visor simple: Anterior / Siguiente + selector de página.
+    Para rendimiento: solo renderiza la página seleccionada.
+    """
+    if not pdf_bytes:
+        return
+
+    total_pages = pdf_page_count(pdf_bytes)
+    st.markdown(f"### 👀 {title}")
+    st.caption(f"Total páginas: {total_pages}")
+
+    # dpi preview
+    dpi = st.select_slider(
+        "Calidad de previsualización (DPI)",
+        options=[72, 96, 120, 150],
+        value=120,
+        key=f"{key_prefix}_dpi"
+    )
+
+    # estado página
+    state_key = f"{key_prefix}_page"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = default_page
+
+    # controles nav
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
+        if st.button("⬅️ Anterior", key=f"{key_prefix}_prev", disabled=st.session_state[state_key] <= 1):
+            st.session_state[state_key] -= 1
+            st.rerun()
+    with c3:
+        if st.button("Siguiente ➡️", key=f"{key_prefix}_next", disabled=st.session_state[state_key] >= total_pages):
+            st.session_state[state_key] += 1
+            st.rerun()
+
+    st.session_state[state_key] = st.number_input(
+        "Página",
+        min_value=1,
+        max_value=total_pages,
+        value=int(st.session_state[state_key]),
+        step=1,
+        key=f"{key_prefix}_page_input"
+    )
+
+    page_0 = int(st.session_state[state_key]) - 1
+    png_bytes = render_pdf_page(pdf_bytes, page_0, dpi=int(dpi))
+    st.image(png_bytes, use_container_width=True)
+
+# ==========================================
+# OCR / FIRMA
+# ==========================================
 def find_name_rect_text(doc: fitz.Document, target_text: str):
     for pi in range(doc.page_count):
         page = doc[pi]
@@ -184,7 +245,6 @@ def ocr_find_name_rect(doc: fitz.Document, target_text: str, zoom=2.8):
     target_text = (target_text or "").strip()
     if not target_text:
         return None
-
     target_tokens = normalize(target_text).split()
     if not target_tokens:
         return None
@@ -222,13 +282,7 @@ def ocr_find_name_rect(doc: fitz.Document, target_text: str, zoom=2.8):
                 sy = page_rect.height / pix.height
                 rect_pdf = fitz.Rect(x0 * sx, y0 * sy, x1 * sx, y1 * sy)
                 return pi, rect_pdf
-
     return None
-
-def render_page_image(page: fitz.Page, zoom=2.0) -> Image.Image:
-    mat = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
 def rect_pdf_to_img(rect_pdf: fitz.Rect, zoom: float):
     return (
@@ -257,7 +311,6 @@ def draw_signature_preview_above(
     dy_pdf=0.0,
 ) -> Image.Image:
     out = img.copy()
-
     nx0, ny0, nx1, ny1 = rect_pdf_to_img(rect_pdf, zoom)
     name_w = max(1, nx1 - nx0)
     name_h = max(1, ny1 - ny0)
@@ -276,13 +329,11 @@ def draw_signature_preview_above(
 
     fx0 = max(0, min(fx0, out.width - 1))
     fy0 = max(0, min(fy0, out.height - 1))
-
     fx1 = min(out.width, fx0 + fw)
     fy1 = min(out.height, fy0 + fh)
 
     w = max(1, fx1 - fx0)
     h = max(1, fy1 - fy0)
-
     sig = sig_img.convert("RGBA").resize((w, h))
     out.paste(sig, (fx0, fy0), sig)
     return out
@@ -300,29 +351,22 @@ def insert_signature_above_into_pdf(
     dy_pdf=0.0,
 ):
     page = doc[page_index]
-
     name_w = name_rect.x1 - name_rect.x0
     name_h = name_rect.y1 - name_rect.y0
-
     w = name_w * scale_w + pad * 2
     h = name_h * scale_h + pad * 2
-
     cx = (name_rect.x0 + name_rect.x1) / 2
     x0 = cx - w / 2
     x1 = cx + w / 2
-
     y1 = name_rect.y0 - gap
     y0 = y1 - h
-
     x0 += dx_pdf
     x1 += dx_pdf
     y0 += dy_pdf
     y1 += dy_pdf
-
     if y0 < 0:
         y0 = 0
         y1 = h
-
     rect_sig = fitz.Rect(x0, y0, x1, y1)
     page.insert_image(rect_sig, stream=sig_bytes, overlay=True)
 
@@ -355,14 +399,12 @@ def preprocess_image(img: Image.Image, auto_enhance=False,
 
     if grayscale:
         work = ImageOps.grayscale(work)
-
     if black_white:
         gray = ImageOps.grayscale(work)
         work = gray.point(lambda x: 255 if x > 160 else 0, mode="1").convert("RGB")
     else:
         if work.mode != "RGB":
             work = work.convert("RGB")
-
     return work
 
 def pil_image_to_pdf_bytes(img: Image.Image) -> bytes:
@@ -416,21 +458,15 @@ def compress_pdf_rasterize(pdf_bytes: bytes, dpi: int = 120, jpeg_quality: int =
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
     dst = fitz.open()
     zoom = dpi / 72.0
-
     for i in range(src.page_count):
         page = src[i]
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         img_bytes = io.BytesIO()
         img.save(img_bytes, format="JPEG", quality=jpeg_quality, optimize=True)
-        img_bytes = img_bytes.getvalue()
-
         rect = page.rect
         new_page = dst.new_page(width=rect.width, height=rect.height)
-        new_page.insert_image(rect, stream=img_bytes)
-
+        new_page.insert_image(rect, stream=img_bytes.getvalue())
     out = io.BytesIO()
     dst.save(out, garbage=4, deflate=True, clean=True)
     dst.close()
@@ -446,7 +482,6 @@ menu = st.sidebar.radio(
     "Selecciona una herramienta",
     ["Inicio", "Unir PDFs y firmar", "Imágenes a PDF", "Comprimir PDF"],
 )
-
 st.sidebar.markdown("---")
 st.sidebar.caption("Herramientas pensadas para una experiencia simple, rápida y bonita ✨")
 
@@ -456,29 +491,15 @@ st.sidebar.caption("Herramientas pensadas para una experiencia simple, rápida y
 if menu == "Inicio":
     st.markdown('<div class="hero">Aplicativo en construcción para Karina 💓</div>', unsafe_allow_html=True)
     st.markdown(f"<div class='card'><h2 style='margin:0'>{APP_TITLE}</h2>"
-                f"<p class='muted'>Unir PDFs • Firmar con OCR • Convertir imágenes • Comprimir archivos</p></div>",
+                f"<p class='muted'>Unir PDFs • Previsualizar • Firmar con OCR • Convertir imágenes • Comprimir</p></div>",
                 unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("<div class='card'><h3>📄 Unir PDFs</h3>"
-                    "<p class='muted'>Respeta el orden del usuario, reordena con flechas y elimina archivos.</p></div>",
-                    unsafe_allow_html=True)
-    with c2:
-        st.markdown("<div class='card'><h3>✍️ Firma opcional</h3>"
-                    "<p class='muted'>Detecta nombre por texto u OCR si es escaneado. Preview + mover firma.</p></div>",
-                    unsafe_allow_html=True)
-    with c3:
-        st.markdown("<div class='card'><h3>🗜️ Comprimir</h3>"
-                    "<p class='muted'>Reduce tamaño con modo rápido o suave y descarga el PDF comprimido.</p></div>",
-                    unsafe_allow_html=True)
 
 # ==========================================
 # UNIR PDFs Y FIRMAR
 # ==========================================
 elif menu == "Unir PDFs y firmar":
     st.markdown("<div class='card'><h2 style='margin:0'>📄 Unir PDFs y firmar</h2>"
-                "<p class='muted'>El orden final será el que veas en “Orden actual de unión”.</p></div>",
+                "<p class='muted'>Primero ordenas → luego unes → luego previsualizas → y si quieres, firmas.</p></div>",
                 unsafe_allow_html=True)
 
     top1, top2, top3 = st.columns([1, 1, 2])
@@ -501,7 +522,6 @@ elif menu == "Unir PDFs y firmar":
         key="output_name"
     )
 
-    # Input de PDFs
     uploaded_files = st.file_uploader(
         "Sube tus PDFs",
         type=["pdf"],
@@ -509,7 +529,7 @@ elif menu == "Unir PDFs y firmar":
         key="pdfs_uploader"
     )
 
-    # Sync inteligente: solo si cambia el conjunto (no el orden)
+    # Sync inteligente por conjunto de archivos
     if uploaded_files:
         incoming_items = [(f.name, len(f.getvalue())) for f in uploaded_files]
         incoming_signature = tuple(sorted(incoming_items))
@@ -519,7 +539,6 @@ elif menu == "Unir PDFs y firmar":
             ]
             st.session_state.merge_signature = incoming_signature
 
-    # Botón manual para volver al orden del explorador
     if uploaded_files and st.button("↩️ Sincronizar con selección del explorador"):
         st.session_state.merge_files = [
             {"name": f.name, "bytes": f.getvalue(), "size": len(f.getvalue())} for f in uploaded_files
@@ -530,7 +549,7 @@ elif menu == "Unir PDFs y firmar":
     st.subheader("🧾 Orden actual de unión")
 
     if st.session_state.merge_files:
-        a1, a2, a3, a4 = st.columns([1, 1, 1, 1])
+        a1, a2, a3 = st.columns([1, 1, 1])
         with a1:
             if st.button("A→Z (ordenar por nombre)"):
                 st.session_state.merge_files = sorted(st.session_state.merge_files, key=lambda x: x["name"].lower())
@@ -543,8 +562,6 @@ elif menu == "Unir PDFs y firmar":
             if st.button("🧹 Limpiar lista"):
                 st.session_state.merge_files = []
                 st.rerun()
-        with a4:
-            st.caption(f"{len(st.session_state.merge_files)} archivo(s)")
 
         for i, item in enumerate(st.session_state.merge_files):
             c1, c2, c3, c4 = st.columns([7, 1, 1, 1])
@@ -574,25 +591,20 @@ elif menu == "Unir PDFs y firmar":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Unir PDFs
     can_merge = len(st.session_state.merge_files) >= 1
     if st.button("✅ Unir PDFs", disabled=not can_merge, key="merge_btn"):
-        st.session_state.sig_dx = 0.0
-        st.session_state.sig_dy = 0.0
-
         files_bytes = [x["bytes"] for x in st.session_state.merge_files]
         with st.spinner("Uniendo PDFs..."):
             merged_bytes = merge_pdfs(files_bytes)
 
         st.session_state.merged_pdf_bytes = merged_bytes
+        st.session_state.preview_page_merge = 1
 
-        # ---- detección segura (NO falla si target está vacío)
+        # detección segura
         target = (st.session_state.last_target or "").strip()
-
         doc = fitz.open(stream=merged_bytes, filetype="pdf")
-        found = None
-        method = None
 
+        found, method = None, None
         if target:
             found = find_name_rect_text(doc, target)
             method = "texto"
@@ -616,18 +628,23 @@ elif menu == "Unir PDFs y firmar":
             st.session_state.det_method = None
 
         doc.close()
-        st.success("PDFs unidos correctamente ✅")
+        st.success("✅ PDF unido listo. Ahora puedes previsualizar y descargar.")
 
-    # Descarga + firma
+    # ---- PREVIEW DEL PDF UNIDO ----
     if st.session_state.merged_pdf_bytes:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("⬇️ Descarga y firma opcional")
+
+        preview_pdf_viewer(
+            st.session_state.merged_pdf_bytes,
+            key_prefix="merge_preview",
+            title="Previsualización del PDF unido",
+            default_page=1
+        )
 
         outname = st.session_state.last_output_name
         outname = outname if outname.lower().endswith(".pdf") else outname + ".pdf"
-
         st.download_button(
-            "Descargar PDF unido (sin firma)",
+            "⬇️ Descargar PDF unido (sin firma)",
             data=st.session_state.merged_pdf_bytes,
             file_name=outname,
             mime="application/pdf",
@@ -636,21 +653,9 @@ elif menu == "Unir PDFs y firmar":
 
         target = (st.session_state.last_target or "").strip()
         if not target:
-            st.info("💡 Para habilitar firma, escribe el **Nombre a detectar**. Si lo dejas vacío, solo se une el PDF.")
-        elif not st.session_state.detected:
-            st.info("No se detectó el nombre configurado en el PDF unido (ni por texto ni por OCR).")
-        else:
+            st.info("💡 Si quieres habilitar firma: escribe el **Nombre a detectar**.")
+        elif st.session_state.detected:
             st.success(f"Nombre detectado ✅ Método: {st.session_state.det_method} | Página: {st.session_state.det_page + 1}")
-
-            preview_zoom = st.slider("Zoom previsualización", 1.0, 3.5, 2.0, 0.1, key="preview_zoom")
-
-            doc = fitz.open(stream=st.session_state.merged_pdf_bytes, filetype="pdf")
-            page = doc[st.session_state.det_page]
-            rect_pdf = fitz.Rect(*st.session_state.det_rect)
-
-            img_page = render_page_image(page, zoom=preview_zoom)
-            rect_img = rect_pdf_to_img(rect_pdf, zoom=preview_zoom)
-            st.image(draw_highlight(img_page, rect_img), caption="Nombre detectado", use_container_width=True)
 
             wants_sign = st.toggle("¿Deseas firmar este documento?", value=False, key="wants_sign")
             if wants_sign:
@@ -661,9 +666,7 @@ elif menu == "Unir PDFs y firmar":
                 scale_w = st.slider("Escala ancho firma", 0.8, 2.5, 1.4, 0.1, key="scale_w")
                 scale_h = st.slider("Escala alto firma", 0.8, 4.0, 2.0, 0.1, key="scale_h")
 
-                st.markdown("#### Mover firma (flechas)")
                 step = st.slider("Paso de movimiento", 1, 30, 6, key="move_step")
-
                 c1, c2, c3, c4, c5 = st.columns(5)
                 with c1:
                     if st.button("⬅️", key="btn_left"):
@@ -682,48 +685,44 @@ elif menu == "Unir PDFs y firmar":
                         st.session_state.sig_dx = 0.0
                         st.session_state.sig_dy = 0.0
 
-                st.caption(f"dx={st.session_state.sig_dx} | dy={st.session_state.sig_dy}")
-
-                if sig_file:
-                    sig_img = Image.open(sig_file).convert("RGBA")
-                    preview_with_sig = draw_signature_preview_above(
-                        img_page, rect_pdf, sig_img,
-                        zoom=preview_zoom,
-                        gap=gap, pad=pad, scale_w=scale_w, scale_h=scale_h,
-                        dx_pdf=st.session_state.sig_dx, dy_pdf=st.session_state.sig_dy,
+                if sig_file and st.button("🔒 Generar PDF firmado", type="primary", key="confirm_sign"):
+                    doc2 = fitz.open(stream=st.session_state.merged_pdf_bytes, filetype="pdf")
+                    rect_pdf = fitz.Rect(*st.session_state.det_rect)
+                    insert_signature_above_into_pdf(
+                        doc2,
+                        st.session_state.det_page,
+                        rect_pdf,
+                        sig_file.getvalue(),
+                        gap=6,
+                        pad=pad,
+                        scale_w=scale_w,
+                        scale_h=scale_h,
+                        dx_pdf=st.session_state.sig_dx,
+                        dy_pdf=st.session_state.sig_dy,
                     )
-                    st.image(preview_with_sig, caption="Previsualización con firma", use_container_width=True)
+                    out = io.BytesIO()
+                    doc2.save(out)
+                    doc2.close()
+                    out.seek(0)
+                    signed_bytes = out.getvalue()
 
-                    if st.button("🔒 Confirmar y generar PDF firmado", type="primary", key="confirm_sign"):
-                        doc2 = fitz.open(stream=st.session_state.merged_pdf_bytes, filetype="pdf")
-                        rect_pdf2 = fitz.Rect(*st.session_state.det_rect)
+                    st.markdown("---")
+                    preview_pdf_viewer(
+                        signed_bytes,
+                        key_prefix="signed_preview",
+                        title="Previsualización del PDF firmado",
+                        default_page=1
+                    )
+                    st.download_button(
+                        "⬇️ Descargar PDF firmado",
+                        data=signed_bytes,
+                        file_name="PDF_unido_firmado.pdf",
+                        mime="application/pdf",
+                        key="dl_signed"
+                    )
 
-                        insert_signature_above_into_pdf(
-                            doc2,
-                            st.session_state.det_page,
-                            rect_pdf2,
-                            sig_file.getvalue(),
-                            gap=max(0, int(gap / preview_zoom)),
-                            pad=pad,
-                            scale_w=scale_w,
-                            scale_h=scale_h,
-                            dx_pdf=st.session_state.sig_dx,
-                            dy_pdf=st.session_state.sig_dy,
-                        )
-
-                        out = io.BytesIO()
-                        doc2.save(out)
-                        doc2.close()
-                        out.seek(0)
-
-                        st.download_button(
-                            "Descargar PDF unido y firmado",
-                            data=out,
-                            file_name="PDF_unido_firmado.pdf",
-                            mime="application/pdf",
-                            key="dl_signed"
-                        )
-            doc.close()
+        else:
+            st.info("No se detectó el nombre configurado en el PDF unido.")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -732,7 +731,7 @@ elif menu == "Unir PDFs y firmar":
 # ==========================================
 elif menu == "Imágenes a PDF":
     st.markdown("<div class='card'><h2 style='margin:0'>🖼️ Imágenes a PDF</h2>"
-                "<p class='muted'>Mejora la imagen antes de convertir y descarga individual o unificado.</p></div>",
+                "<p class='muted'>Convierte, mejora y previsualiza el PDF final antes de descargar.</p></div>",
                 unsafe_allow_html=True)
 
     if st.button("🔄 Reiniciar sección imágenes"):
@@ -753,11 +752,9 @@ elif menu == "Imágenes a PDF":
             format_func=lambda i: uploaded_images[i].name,
             key="selected_preview_img"
         )
-
         original_img = open_uploaded_image(uploaded_images[selected_preview])
 
         auto_enhance = st.toggle("Mejora automática", value=True, key="auto_enhance")
-
         c1, c2, c3 = st.columns(3)
         with c1:
             brightness = st.slider("Brillo", 0.5, 2.0, 1.0, 0.1, key="brightness")
@@ -772,10 +769,7 @@ elif menu == "Imágenes a PDF":
         with c5:
             black_white = st.checkbox("Blanco y negro", key="black_white")
 
-        improved_img = preprocess_image(
-            original_img, auto_enhance, brightness, contrast, sharpness, grayscale, black_white
-        )
-
+        improved_img = preprocess_image(original_img, auto_enhance, brightness, contrast, sharpness, grayscale, black_white)
         p1, p2 = st.columns(2)
         with p1:
             st.image(original_img, caption="Original", use_container_width=True)
@@ -790,31 +784,29 @@ elif menu == "Imágenes a PDF":
 
         if st.button("🖼️ Convertir imágenes", key="convert_images_btn"):
             with st.spinner("Convirtiendo..."):
-                pdfs, pdf_names = convert_multiple_images_to_individual_pdfs(
+                pdfs, names = convert_multiple_images_to_individual_pdfs(
                     uploaded_images, auto_enhance, brightness, contrast, sharpness, grayscale, black_white
                 )
 
             st.session_state.converted_images_pdf_bytes = pdfs
-            st.session_state.converted_images_names = pdf_names
+            st.session_state.converted_images_names = names
 
             if mode in ["Convertir y unificar en un solo PDF", "Hacer ambas opciones"]:
                 st.session_state.merged_images_pdf_bytes = merge_pdfs(pdfs)
+                st.session_state.preview_page_images = 1
             else:
                 st.session_state.merged_images_pdf_bytes = None
 
-            st.success("Conversión completada ✅")
+            st.success("✅ Conversión lista. Ahora puedes previsualizar y descargar.")
 
     if st.session_state.converted_images_pdf_bytes:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("⬇️ Descargas")
+        st.subheader("⬇️ Descargas y previsualización")
 
         mode = st.session_state.get("images_mode", "Convertir y descargar PDFs individuales")
 
         if mode in ["Convertir y descargar PDFs individuales", "Hacer ambas opciones"]:
-            zip_bytes = build_zip_of_pdfs(
-                st.session_state.converted_images_pdf_bytes,
-                st.session_state.converted_images_names
-            )
+            zip_bytes = build_zip_of_pdfs(st.session_state.converted_images_pdf_bytes, st.session_state.converted_images_names)
             st.download_button(
                 "Descargar ZIP (PDFs individuales)",
                 data=zip_bytes,
@@ -823,15 +815,20 @@ elif menu == "Imágenes a PDF":
                 key="download_zip_individuals"
             )
 
-        if mode in ["Convertir y unificar en un solo PDF", "Hacer ambas opciones"]:
-            if st.session_state.merged_images_pdf_bytes:
-                st.download_button(
-                    "Descargar PDF unificado",
-                    data=st.session_state.merged_images_pdf_bytes,
-                    file_name="imagenes_unificadas.pdf",
-                    mime="application/pdf",
-                    key="download_merged_images_pdf"
-                )
+        if mode in ["Convertir y unificar en un solo PDF", "Hacer ambas opciones"] and st.session_state.merged_images_pdf_bytes:
+            preview_pdf_viewer(
+                st.session_state.merged_images_pdf_bytes,
+                key_prefix="images_preview",
+                title="Previsualización del PDF unificado (imágenes → PDF)",
+                default_page=1
+            )
+            st.download_button(
+                "Descargar PDF unificado",
+                data=st.session_state.merged_images_pdf_bytes,
+                file_name="imagenes_unificadas.pdf",
+                mime="application/pdf",
+                key="download_merged_images_pdf"
+            )
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -840,7 +837,7 @@ elif menu == "Imágenes a PDF":
 # ==========================================
 elif menu == "Comprimir PDF":
     st.markdown("<div class='card'><h2 style='margin:0'>🗜️ Comprimir PDF</h2>"
-                "<p class='muted'>Modo rápido reduce mucho (ideal escaneados). Modo suave mantiene mejor calidad.</p></div>",
+                "<p class='muted'>Modo rápido reduce mucho (ideal escaneados). Modo suave conserva mejor calidad.</p></div>",
                 unsafe_allow_html=True)
 
     if st.button("🔄 Reiniciar compresión"):
@@ -889,6 +886,12 @@ elif menu == "Comprimir PDF":
                 st.success(f"Listo ✅ Nuevo tamaño: **{new_mb:.2f} MB** | Reducción aprox: **{reduction:.1f}%**")
 
     if st.session_state.compressed_pdf_bytes:
+        preview_pdf_viewer(
+            st.session_state.compressed_pdf_bytes,
+            key_prefix="compress_preview",
+            title="Previsualización del PDF comprimido",
+            default_page=1
+        )
         st.download_button(
             "Descargar PDF comprimido",
             data=st.session_state.compressed_pdf_bytes,
