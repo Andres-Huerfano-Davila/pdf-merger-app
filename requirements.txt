@@ -1,4 +1,6 @@
-streamlit
-pymupdf
-pytesseract
-Pillow
+streamlit==1.52.1
+# Streamlit 1.52.1 is not compatible with Starlette 1.x's GZipResponder API.
+starlette==0.49.3
+pymupdf==1.27.2.3
+pytesseract==0.3.13
+Pillow==12.3.0
