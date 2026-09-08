@@ -2,20 +2,45 @@ import io
 import re
 import zipfile
 import hashlib
+import shutil
+from html import escape
 import streamlit as st
 import fitz  # PyMuPDF
 from PIL import Image, ImageDraw, ImageOps, ImageEnhance
-import pytesseract
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+from docx import Document
+from docx.table import Table as DocxTable
+from docx.text.paragraph import Paragraph as DocxParagraph
+from docx.oxml.table import CT_Tbl
+from docx.oxml.text.paragraph import CT_P
+from docx.oxml.ns import qn
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    Image as ReportLabImage,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 # =========================================================
 # CONFIG
 # =========================================================
-APP_TITLE = "📄 Suite PDF: Unir, Dividir, Convertir Imágenes, Firmar y Comprimir"
+APP_TITLE = "📄 Suite PDF: Unir, Dividir, Convertir Word e Imágenes, Firmar y Comprimir"
 TARGET_DEFAULT = "Lennin Karina Triana Fandiño"
 
 # Aguamarina
 ACCENT = "#20DE6E"
 ACCENT_HOVER = "#16B85B"
+OCR_AVAILABLE = pytesseract is not None and shutil.which("tesseract") is not None
 
 st.set_page_config(page_title="Suite PDF", page_icon="📄", layout="wide")
 
@@ -122,6 +147,11 @@ def init_state():
 
         # Split module
         "split_outputs": [],        # [(filename, bytes), ...]
+
+        # Word module
+        "word_pdf_bytes": None,
+        "word_pdf_name": "documento_convertido.pdf",
+        "word_source_name": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -151,6 +181,11 @@ def reset_compress():
 def reset_split():
     st.session_state.split_outputs = []
     st.session_state.encrypted_split = []
+
+def reset_word():
+    st.session_state.word_pdf_bytes = None
+    st.session_state.word_pdf_name = "documento_convertido.pdf"
+    st.session_state.word_source_name = None
 
 init_state()
 
@@ -335,6 +370,8 @@ def find_name_rect_text(doc: fitz.Document, target_text: str):
     return None
 
 def ocr_find_name_rect(doc: fitz.Document, target_text: str, zoom=2.8):
+    if not OCR_AVAILABLE:
+        return None
     target_text = (target_text or "").strip()
     if not target_text:
         return None
@@ -482,6 +519,203 @@ def build_zip_of_pdfs(pdf_bytes_list, pdf_names):
     return out_zip.getvalue()
 
 # =========================================================
+# WORD (.DOCX) → PDF (sin dependencias del sistema)
+# =========================================================
+def _iter_docx_blocks(document):
+    """Recorre párrafos y tablas respetando el orden del documento."""
+    for child in document.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            yield DocxParagraph(child, document)
+        elif isinstance(child, CT_Tbl):
+            yield DocxTable(child, document)
+
+def _paragraph_runs(paragraph):
+    """Incluye también el texto que está dentro de hipervínculos."""
+    if hasattr(paragraph, "iter_inner_content"):
+        for item in paragraph.iter_inner_content():
+            if hasattr(item, "runs"):
+                yield from item.runs
+            else:
+                yield item
+    else:
+        yield from paragraph.runs
+
+def _paragraph_markup(paragraph):
+    chunks = []
+    for run in _paragraph_runs(paragraph):
+        text = escape(run.text or "").replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;").replace("\n", "<br/>")
+        if not text:
+            continue
+        if run.underline:
+            text = f"<u>{text}</u>"
+        if run.italic:
+            text = f"<i>{text}</i>"
+        if run.bold:
+            text = f"<b>{text}</b>"
+        chunks.append(text)
+    return "".join(chunks)
+
+def _paragraph_style(paragraph, styles, sequence):
+    source_style = paragraph.style
+    style_name = (source_style.name if source_style else "Normal").lower()
+    if "title" in style_name or "título" in style_name:
+        base = styles["Title"]
+    elif "heading 1" in style_name or "título 1" in style_name:
+        base = styles["Heading1"]
+    elif "heading 2" in style_name or "título 2" in style_name:
+        base = styles["Heading2"]
+    elif "heading" in style_name or "título" in style_name:
+        base = styles["Heading3"]
+    else:
+        base = styles["BodyText"]
+
+    alignment = {
+        0: TA_LEFT,
+        1: TA_CENTER,
+        2: TA_RIGHT,
+        3: TA_JUSTIFY,
+    }.get(paragraph.alignment, base.alignment)
+    fmt = paragraph.paragraph_format
+    font_size = None
+    for run in paragraph.runs:
+        if run.font.size:
+            font_size = run.font.size.pt
+            break
+    if font_size is None and source_style and source_style.font.size:
+        font_size = source_style.font.size.pt
+
+    return ParagraphStyle(
+        f"docx_style_{sequence}",
+        parent=base,
+        fontName="Helvetica",
+        fontSize=font_size or base.fontSize,
+        leading=(font_size or base.fontSize) * 1.25,
+        alignment=alignment,
+        leftIndent=fmt.left_indent.pt if fmt.left_indent else base.leftIndent,
+        rightIndent=fmt.right_indent.pt if fmt.right_indent else base.rightIndent,
+        firstLineIndent=fmt.first_line_indent.pt if fmt.first_line_indent else base.firstLineIndent,
+        spaceBefore=fmt.space_before.pt if fmt.space_before else base.spaceBefore,
+        spaceAfter=fmt.space_after.pt if fmt.space_after else max(base.spaceAfter, 4),
+    )
+
+def _paragraph_has_numbering(paragraph):
+    properties = paragraph._p.pPr
+    return properties is not None and properties.numPr is not None
+
+def _paragraph_images(paragraph, document, available_width):
+    images = []
+    for blip in paragraph._p.xpath(".//a:blip"):
+        relationship_id = blip.get(qn("r:embed"))
+        if not relationship_id or relationship_id not in document.part.related_parts:
+            continue
+        try:
+            image_bytes = document.part.related_parts[relationship_id].blob
+            width, height = 4 * inch, 3 * inch
+            extent = blip.xpath("ancestor::wp:inline/wp:extent | ancestor::wp:anchor/wp:extent")
+            if extent:
+                width = int(extent[0].get("cx")) / 914400 * inch
+                height = int(extent[0].get("cy")) / 914400 * inch
+            scale = min(1.0, available_width / width, (8.5 * inch) / height)
+            image = ReportLabImage(io.BytesIO(image_bytes), width=width * scale, height=height * scale)
+            image.hAlign = "CENTER"
+            images.extend([image, Spacer(1, 6)])
+        except Exception:
+            # Una imagen dañada no debe impedir convertir el resto del documento.
+            continue
+    return images
+
+def _table_flowable(docx_table, available_width, styles):
+    column_count = max((len(row.cells) for row in docx_table.rows), default=1)
+    data = []
+    for row in docx_table.rows:
+        cells = []
+        for cell in row.cells:
+            paragraphs = [_paragraph_markup(p) for p in cell.paragraphs]
+            cell_markup = "<br/>".join(text for text in paragraphs if text) or " "
+            cells.append(Paragraph(cell_markup, styles["BodyText"]))
+        cells.extend([Paragraph(" ", styles["BodyText"])] * (column_count - len(cells)))
+        data.append(cells)
+    if not data:
+        return Spacer(1, 1)
+    table = Table(data, colWidths=[available_width / column_count] * column_count, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#B7B7B7")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return table
+
+def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
+    """Convierte un DOCX a PDF usando solo Python, apt/Word/LibreOffice no son necesarios."""
+    document = Document(io.BytesIO(docx_bytes))
+    section = document.sections[0]
+    page_size = (section.page_width.pt, section.page_height.pt)
+    left_margin = section.left_margin.pt
+    right_margin = section.right_margin.pt
+    top_margin = section.top_margin.pt
+    bottom_margin = section.bottom_margin.pt
+    available_width = page_size[0] - left_margin - right_margin
+
+    output = io.BytesIO()
+    pdf = SimpleDocTemplate(
+        output,
+        pagesize=page_size,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin,
+        title=document.core_properties.title or "Documento convertido",
+        author=document.core_properties.author or "",
+    )
+    styles = getSampleStyleSheet()
+    styles["BodyText"].fontName = "Helvetica"
+    styles["BodyText"].fontSize = 10
+    styles["BodyText"].leading = 12.5
+    story = []
+
+    for sequence, block in enumerate(_iter_docx_blocks(document)):
+        if isinstance(block, DocxParagraph):
+            markup = _paragraph_markup(block)
+            style = _paragraph_style(block, styles, sequence)
+            images = _paragraph_images(block, document, available_width)
+            if markup:
+                bullet = "•" if _paragraph_has_numbering(block) else None
+                story.append(Paragraph(markup, style, bulletText=bullet))
+            elif not images:
+                story.append(Spacer(1, max(style.leading / 2, 4)))
+            story.extend(images)
+            if block._p.xpath(".//w:br[@w:type='page']"):
+                story.append(PageBreak())
+        else:
+            story.extend([_table_flowable(block, available_width, styles), Spacer(1, 8)])
+
+    if not story:
+        story.append(Paragraph("Documento sin contenido visible.", styles["BodyText"]))
+
+    header_text = " | ".join(p.text.strip() for p in section.header.paragraphs if p.text.strip())
+    footer_text = " | ".join(p.text.strip() for p in section.footer.paragraphs if p.text.strip())
+
+    def draw_header_footer(canvas, _doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.HexColor("#666666"))
+        if header_text:
+            canvas.drawCentredString(page_size[0] / 2, page_size[1] - max(top_margin / 2, 18), header_text[:180])
+        footer = footer_text[:150]
+        if footer:
+            footer = f"{footer}  ·  "
+        canvas.drawCentredString(page_size[0] / 2, max(bottom_margin / 2, 14), f"{footer}Página {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    pdf.build(story, onFirstPage=draw_header_footer, onLaterPages=draw_header_footer)
+    output.seek(0)
+    return output.getvalue()
+
+# =========================================================
 # COMPRESS PDF
 # =========================================================
 def guess_file_type(filename: str) -> str:
@@ -603,7 +837,7 @@ def split_doc_every_n(doc: fitz.Document, n: int):
 st.sidebar.title("📚 Menú")
 menu = st.sidebar.radio(
     "Selecciona una herramienta",
-    ["Inicio", "Unir PDFs", "Dividir PDF", "Imágenes a PDF", "Comprimir PDF"],
+    ["Inicio", "Unir PDFs", "Dividir PDF", "Word a PDF", "Imágenes a PDF", "Comprimir PDF"],
 )
 st.sidebar.markdown("---")
 st.sidebar.caption("Carga → previsualiza (opcional) → procesa → descarga ✅")
@@ -637,7 +871,13 @@ elif menu == "Unir PDFs":
             reset_merge()
             st.rerun()
     with top2:
-        enable_ocr = st.toggle("Usar OCR si viene escaneado", value=True, key="enable_ocr")
+        enable_ocr = st.toggle(
+            "Usar OCR si viene escaneado",
+            value=False,
+            disabled=not OCR_AVAILABLE,
+            help="Requiere Tesseract instalado en el servidor.",
+            key="enable_ocr",
+        )
     with top3:
         st.session_state.last_target = st.text_input(
             "Nombre a detectar (para habilitar firma)",
@@ -1060,6 +1300,64 @@ elif menu == "Dividir PDF":
                 st.info("Mostrando 30. Usa el ZIP para descargar todo.")
 
         st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================================
+# MODULE: WORD A PDF
+# =========================================================
+elif menu == "Word a PDF":
+    st.markdown(
+        "<div class='card'><h2 style='margin:0'>📝 Word a PDF</h2>"
+        "<p class='muted'>Convierte documentos DOCX a PDF sin enviar el archivo a servicios externos.</p></div>",
+        unsafe_allow_html=True
+    )
+
+    if st.button("🔄 Reiniciar conversión", key="reset_word"):
+        reset_word()
+        st.rerun()
+
+    word_file = st.file_uploader(
+        "Sube el documento de Word",
+        type=["docx"],
+        help="Se admite el formato moderno .docx. Los archivos antiguos .doc deben guardarse primero como .docx.",
+        key="word_uploader",
+    )
+
+    if word_file:
+        if st.session_state.word_source_name != word_file.name:
+            st.session_state.word_pdf_bytes = None
+            st.session_state.word_source_name = word_file.name
+        default_name = f"{word_file.name.rsplit('.', 1)[0]}.pdf"
+        output_name = st.text_input(
+            "Nombre del PDF",
+            value=default_name,
+            key=f"word_output_{word_file.name}",
+        )
+        st.caption("Se conservan textos, estilos comunes, listas, tablas, imágenes, márgenes y saltos de página.")
+
+        if st.button("📝 Convertir Word a PDF", type="primary", key="convert_word"):
+            try:
+                with st.spinner("Convirtiendo documento..."):
+                    converted = convert_docx_to_pdf(word_file.getvalue())
+                st.session_state.word_pdf_bytes = converted
+                st.session_state.word_pdf_name = output_name if output_name.lower().endswith(".pdf") else output_name + ".pdf"
+                st.success("✅ Documento convertido correctamente.")
+            except Exception as exc:
+                st.session_state.word_pdf_bytes = None
+                st.error(f"No se pudo convertir el DOCX: {type(exc).__name__}: {exc}")
+
+    if st.session_state.word_pdf_bytes:
+        preview_pdf_viewer_fast(
+            st.session_state.word_pdf_bytes,
+            key_prefix="word_preview",
+            title="Previsualización del documento convertido",
+        )
+        st.download_button(
+            "⬇️ Descargar PDF",
+            data=st.session_state.word_pdf_bytes,
+            file_name=st.session_state.word_pdf_name,
+            mime="application/pdf",
+            key="download_word_pdf",
+        )
 
 # =========================================================
 # MODULE: IMÁGENES A PDF
